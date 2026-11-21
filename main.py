@@ -12,11 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-
-HERE = Path(__file__).resolve().parent
-SOURCE = HERE / "entry.jpg"
-DEST = Path("/output/entry.png")
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 JPEG_MAGIC = b"\xff\xd8\xff"
@@ -24,6 +21,20 @@ JPEG_MAGIC = b"\xff\xd8\xff"
 
 class EntryError(RuntimeError):
     """The bundled image is missing, empty, or not an image at all."""
+
+
+@dataclass(frozen=True)
+class EntryPaths:
+    """Where the bundled image lives and where the grader expects it."""
+
+    source: Path
+    dest: Path
+
+    @classmethod
+    def discover(cls) -> "EntryPaths":
+        """Locate the bundled image next to this file; target /output."""
+        here = Path(__file__).resolve().parent
+        return cls(source=here / "entry.jpg", dest=Path("/output/entry.png"))
 
 
 def sniff_format(data: bytes) -> str:
@@ -39,41 +50,50 @@ def sniff_format(data: bytes) -> str:
     raise EntryError("entry.jpg has no PNG or JPEG signature")
 
 
-def read_entry() -> tuple[bytes, str]:
+def read_entry(paths: EntryPaths) -> tuple[bytes, str]:
     """Load the bundled image and report its format."""
-    if not SOURCE.is_file():
-        raise EntryError(f"bundled image not found: {SOURCE}")
-    data = SOURCE.read_bytes()
+    if not paths.source.is_file():
+        raise EntryError(f"bundled image not found: {paths.source}")
+    data = paths.source.read_bytes()
     if not data:
         raise EntryError("bundled image is empty")
     return data, sniff_format(data)
 
 
-def deliver(data: bytes) -> Path:
+def deliver(paths: EntryPaths, data: bytes) -> Path:
     """Write the image bytes to ``/output/entry.png``."""
-    DEST.parent.mkdir(parents=True, exist_ok=True)
-    DEST.write_bytes(data)
-    return DEST
+    paths.dest.parent.mkdir(parents=True, exist_ok=True)
+    paths.dest.write_bytes(data)
+    return paths.dest
 
 
-def main() -> int:
+def announce(dest: Path, fmt: str, data: bytes) -> None:
+    """Print a one-line summary of the shipped entry."""
+    digest = hashlib.sha256(data).hexdigest()[:12]
+    print(f"wrote {dest} ({fmt}, {len(data)} bytes, sha256 {digest}...)")
+
+
+def verify(paths: EntryPaths, data: bytes) -> None:
+    """Confirm the written copy is byte-for-byte identical."""
+    if paths.dest.read_bytes() != data:
+        raise EntryError(f"{paths.dest} differs from {paths.source}")
+
+
+def ship_entry(paths: EntryPaths) -> int:
+    """Copy the bundled image to /output and verify the copy."""
     try:
-        data, fmt = read_entry()
+        data, fmt = read_entry(paths)
+        deliver(paths, data)
+        verify(paths, data)
     except EntryError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    out = deliver(data)
-
-    # Read it back and confirm the copy is byte-for-byte identical.
-    if out.read_bytes() != data:
-        print("error: /output/entry.png differs from entry.jpg",
-              file=sys.stderr)
-        return 1
-
-    digest = hashlib.sha256(data).hexdigest()[:12]
-    print(f"wrote {out} ({fmt}, {len(data)} bytes, sha256 {digest}...)")
+    announce(paths.dest, fmt, data)
     return 0
+
+
+def main() -> int:
+    return ship_entry(EntryPaths.discover())
 
 
 if __name__ == "__main__":
